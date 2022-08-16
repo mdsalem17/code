@@ -29,12 +29,13 @@
         }
     ],
     "training_kwargs": {
+        "seed": 42,
         "do_train": true,
         "do_eval": false,
         "do_predict": false,
         "group_by_length": false,
         "output_dir": "experiments/rc/viquae/train",
-        "logging_dir": "experiments/rc/viquae/train",
+        "logging_dir": "experiments/rc/viquae/train/logs",
         "logging_first_step": true,
         "evaluation_strategy": "steps",
         "per_device_train_batch_size": 3,
