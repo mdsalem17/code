@@ -4,7 +4,8 @@ from typing import Optional, Tuple
 import torch.nn as nn
 import torch
 from transformers.models.dpr.modeling_dpr import DPRReaderOutput
-from transformers.modeling_outputs import QuestionAnsweringModelOutput, ModelOutput
+from transformers.modeling_outputs import QuestionAnsweringModelOutput, ModelOutput, SequenceClassifierOutput
+from transformers import VisualBertForQuestionAnswering, VisualBertForVisualReasoning, LxmertForQuestionAnswering
 from transformers import BertForQuestionAnswering
 
 from meerqat.train.losses import _calc_mml
@@ -43,6 +44,15 @@ class MultiPassageBERTOutput(QuestionAnsweringModelOutput):
     """
     start_log_probs: torch.FloatTensor = None
     end_log_probs: torch.FloatTensor = None
+
+
+@dataclass
+class BERTRankerOutput(QuestionAnsweringModelOutput):
+    """
+    Same as MultiPassageBERTOutput but with relevance_logits important for ranking
+    """
+    loss: Optional[torch.FloatTensor] = None    
+    relevance_logits: torch.FloatTensor = None
 
 
 @dataclass 
@@ -306,3 +316,62 @@ class MultiPassageBERT(BertForQuestionAnswering):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+class BERTRanker(BertForQuestionAnswering):
+    """
+    BERT-based Ranker Based on transformers.BertForQuestionAnswering
+    and https://github.com/allenai/document-qa/blob/master/docqa/nn/span_prediction.py
+    
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.qa_classifier = nn.Linear(self.config.hidden_size, 1)
+        
+    
+    def forward(self,
+                input_ids,
+                switch_labels=None,
+                N=None, M=None,
+                indices=None, relevants=None,
+                return_dict=None, **kwargs):
+        """
+        notations: 
+            N - number of distinct questions
+            M - number of passages per question in a batch
+            L - sequence length
+
+        Parameters
+        ----------
+        input_ids: Tensor[int]
+            shape (N * M, L)
+            There should always be a constant number of passages (relevant or not) per question
+        **kwargs: additional arguments are passed to BERT after being reshape like 
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        
+        outputs = self.bert(input_ids, return_dict=True, **kwargs)
+        sequence_output = outputs[0]
+        relevance_logits = self.qa_classifier(sequence_output[:, 0, :])
+        
+        switch_loss = None
+        if len(switch_labels) > 0:
+            
+            loss_fct = nn.CrossEntropyLoss(reduction='mean')
+            
+            # compute switch loss
+            relevance_logits = relevance_logits.view(N, M)
+            switch_loss = loss_fct(relevance_logits, switch_labels)
+            
+        if not return_dict:
+            output = (relevance_logits) + outputs[2:]
+            return ((switch_loss,) + output) if switch_loss is not None else output
+        
+        
+        return BERTRankerOutput(
+            loss=switch_loss,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            relevance_logits=relevance_logits
+        )
+    

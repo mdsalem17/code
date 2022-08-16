@@ -642,6 +642,120 @@ class MultiPassageBERTTrainer(QuestionAnsweringTrainer):
 
         return EvalLoopOutput(predictions=predictions, label_ids=None, metrics=metrics, num_samples=num_samples)
 
+    
+
+        
+class BERTRankerTrainer(QuestionAnsweringTrainer):
+    """
+    Specific for RC, more precisely BERTRanker
+    
+    Parameters
+    ----------
+    *args, **kwargs: additional arguments are passed to QuestionAnsweringTrainer
+    """
+    def __init__(self, *args, oracle=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.oracle = oracle
+        if self.oracle:
+            self.prediction_file_name = "oracle_predictions.json"
+            self.metrics_file_name = "oracle_metrics.json"
+            if self.n_relevant_passages != self.M:
+                warnings.warn(f"Oracle mode. Setting n_relevant_passages={self.M}")
+                self.n_relevant_passages = self.M
+        assert self.n_relevant_passages == 1
+        # FIXME isn't there a more robust way of defining data_collator as the method collate_fn ?
+        self.data_collator = self.collate_fn
+    
+    def get_eval_passages(self, item):
+        """Keep the top-M passages retrieved by the IR"""
+        indices  = item[self.search_key+"_indices"][: self.M]
+        scores   = item[self.search_key+"_scores"][: self.M]
+        relevants = item[self.search_key+"_provenance_indices"] + item[self.search_key+"_alternative_indices"]
+        original = item[self.search_key+"_provenance_indices"]
+        mask     = np.in1d(indices, original)
+        label    = np.where(mask == True)[0][0] if len(np.where(mask == True)[0]) > 0 else -100
+        return self.kb.select(indices)['passage'], scores, indices, relevants, label
+
+    def write_predictions(self, predictions, resume_from_checkpoint):
+        file_path = str(resume_from_checkpoint)
+        file_path = '/'.join(file_path.split('/')[:-1])
+        file_path  = Path(file_path)/"predictions.pt"
+        torch.save(predictions, file_path)
+    
+    
+    def write_metrics(self, metrics, resume_from_checkpoint):
+        print(metrics)
+        file_path = str(resume_from_checkpoint)
+        file_path = '/'.join(file_path.split('/')[:-1])
+        file_path  = Path(file_path)/self.metrics_file_name
+        with open(file_path, "w") as file:
+            json.dump(metrics, file)
+    
+    
+    def collate_fn(self, items):
+        """
+        Collate batch so that each question is associate with n_relevant_passages and M-n irrelevant ones.
+        Also tokenizes input strings
+
+        Returns (a dict of)
+        -------------------
+        input_ids: Tensor[int]
+            shape (N * M, L)
+        passage_scores: Tensor[float], optional
+            shape (N * M)
+            only in evaluation mode
+        **kwargs: more tensors depending on the tokenizer, e.g. attention_mask
+        """
+        questions, passages, switch_labels = [], [], []
+        passage_scores = []
+        indices, relevants = [], []
+        N = len(items)
+        for i, item in enumerate(items):
+            # N. B. seed is set in Trainer
+            questions.extend([item['input']]*self.M)
+
+            # oracle -> use only relevant passages
+            if (self.args.do_eval or self.args.do_predict) and not self.oracle:
+                passage, score, index, relevant, label = self.get_eval_passages(item)
+                passage_scores.extend(score)
+                indices.append(index)
+                relevants.append(relevant+[-1]*(1000-len(relevant)))
+                switch_labels.append(label)
+                
+                if len(score) < self.M:
+                    passage_scores.extend([0]*(self.M-len(score)))
+            else:
+                relevant_passage, irrelevant_passage = self.get_training_passages(item)
+                #if there is no relevant passage set label = -100, so it will be ignore when computing the loss
+                if len(relevant_passage) == 0:
+                    switch_labels.append(-100)
+                else: switch_labels.append(0)
+                passage = relevant_passage + irrelevant_passage
+
+            passages.extend(passage)
+            
+            # padding passages
+            if len(passage) < self.M:
+                passages.extend(['']*(self.M-len(passage)))
+            
+        batch = self.tokenizer(*(questions, passages), **self.tokenization_kwargs)
+        batch['N'] = N
+        batch['M'] = self.M
+        batch['switch_labels'] = torch.tensor(switch_labels)
+        
+        if indices:
+            batch['indices']   = torch.tensor(indices)
+            batch['relevants'] = torch.tensor(relevants)
+        
+        return batch
+        
+
+    def _prepare_inputs(self, inputs: dict) -> dict:
+        """remove all keys not used by the model but necessary for evaluation before returning Trainer._prepare_inputs"""
+        
+        return super()._prepare_inputs(inputs)
+    
+
 
 def get_checkpoint(resume_from_checkpoint: str, *args, **kwargs):
     if args or kwargs:
