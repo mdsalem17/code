@@ -5,7 +5,9 @@ import torch.nn as nn
 import torch
 from transformers.models.dpr.modeling_dpr import DPRReaderOutput
 from transformers.modeling_outputs import QuestionAnsweringModelOutput, ModelOutput, SequenceClassifierOutput
+from transformers.models.vilt.modeling_vilt import ViltForImagesAndTextClassificationOutput
 from transformers import VisualBertForQuestionAnswering, VisualBertForVisualReasoning, LxmertForQuestionAnswering
+from transformers import ViltProcessor, ViltForImagesAndTextClassification
 from transformers import BertForQuestionAnswering
 
 from meerqat.train.losses import _calc_mml
@@ -53,7 +55,6 @@ class BERTRankerOutput(QuestionAnsweringModelOutput):
     """
     loss: Optional[torch.FloatTensor] = None    
     relevance_logits: torch.FloatTensor = None
-
 
 @dataclass 
 class DPRBiEncoderOutput(ModelOutput):
@@ -332,7 +333,7 @@ class BERTRanker(BertForQuestionAnswering):
     def forward(self,
                 input_ids,
                 switch_labels=None,
-                N=None, M=None,
+                N=None, M=None, cls=-1,
                 indices=None, relevants=None,
                 return_dict=None, **kwargs):
         """
@@ -354,6 +355,8 @@ class BERTRanker(BertForQuestionAnswering):
         sequence_output = outputs[0]
         relevance_logits = self.qa_classifier(sequence_output[:, 0, :])
         
+        torch.save(sequence_output[:, 0, :], 'test_'+str(cls)+'.pt')
+        
         switch_loss = None
         if len(switch_labels) > 0:
             
@@ -372,6 +375,107 @@ class BERTRanker(BertForQuestionAnswering):
             loss=switch_loss,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            relevance_logits=relevance_logits
+            relevance_logits=relevance_logits,
+        )
+    
+class ViLTRanker(ViltForImagesAndTextClassification):
+    """
+    ViLT-based Ranker Based on transformers.ViltForImagesAndTextClassification
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Classifier head
+        num_images = self.config.num_images
+        self.qa_classifier = nn.Sequential(
+            nn.Linear(self.config.hidden_size * num_images, self.config.hidden_size * num_images),
+            nn.LayerNorm(self.config.hidden_size * num_images),
+            nn.GELU(),
+            nn.Linear(self.config.hidden_size * num_images, 1),
+        )
+        
+    
+    def forward(self,
+                input_ids, pixel_values, pixel_mask,                
+                output_attentions=None,
+                output_hidden_states=None,
+                switch_labels=None,
+                N=None, M=None,
+                indices=None, relevants=None,
+                return_dict=None, **kwargs):
+        """
+        notations: 
+            N - number of distinct questions
+            M - number of passages per question in a batch
+            L - sequence length
+
+        Parameters
+        ----------
+        input_ids: Tensor[int]
+            shape (N * M, L)
+            There should always be a constant number of passages (relevant or not) per question
+        **kwargs: additional arguments are passed to BERT after being reshape like 
+        """
+        
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if pixel_values is not None and pixel_values.ndim == 4:
+            # add dummy num_images dimension
+            pixel_values = pixel_values.unsqueeze(1)
+        num_images = pixel_values.shape[1]
+        if num_images != self.config.num_images:
+            raise ValueError(
+                "Make sure to match the number of images in the model with the number of images in the input."
+            )
+        
+        pooler_outputs = []
+        hidden_states = [] if output_hidden_states else None
+        attentions = [] if output_attentions else None
+        
+        for i in range(num_images):
+            # forward every image through the model
+            outputs = self.vilt(
+                input_ids,
+                pixel_values=pixel_values[:, i, :, :, :],
+                pixel_mask=pixel_mask[:, i, :, :] if pixel_mask is not None else None,
+                image_token_type_idx=i + 1,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                **kwargs
+            )
+            pooler_output = outputs.pooler_output if return_dict else outputs[1]
+            pooler_outputs.append(pooler_output)
+            if output_hidden_states:
+                hidden_states.append(outputs.hidden_states)
+            if output_attentions:
+                attentions.append(outputs.attentions)
+
+        pooled_output = torch.cat(pooler_outputs, dim=-1)
+        relevance_logits = self.qa_classifier(pooled_output)
+        
+        switch_loss = None
+        if len(switch_labels) > 0:
+            
+            loss_fct = nn.CrossEntropyLoss(reduction='mean')
+            
+            # compute switch loss
+            relevance_logits = relevance_logits.view(N, M)
+            switch_loss = loss_fct(relevance_logits, switch_labels)
+        
+        if not return_dict:
+            output = (relevance_logits, hidden_states, attentions)
+            return ((switch_loss,) + output) if switch_loss is not None else output
+
+        return ViltForImagesAndTextClassificationOutput(
+            loss=switch_loss,
+            logits=relevance_logits,
+            hidden_states=hidden_states,
+            attentions=attentions,
         )
     
