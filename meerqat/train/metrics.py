@@ -1,5 +1,7 @@
 """Metrics to be used in trainer."""
 
+from ranx import Qrels, Run, evaluate
+
 def retrieval(eval_prediction, ignore_index=-100):
     """
     Computes metric for retrieval training (at the batch-level)
@@ -48,7 +50,7 @@ def retrieval(eval_prediction, ignore_index=-100):
     return metrics
 
 
-def ranker(eval_prediction, ignore_index=-100):
+def ranking(eval_prediction, ignore_index=-100):
     """
     Computes metric for ranker evaluation (at the batch-level)
     
