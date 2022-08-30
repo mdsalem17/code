@@ -1,0 +1,65 @@
+{
+    "trainee": {
+        "class_name": "BERTRanker",
+        "pretrained_model_name_or_path": "bert-base-uncased"
+    },
+    "trainer_class": "BERTRankerTrainer",
+    "tokenizer": {
+        "class_name": "BertTokenizer",
+        "pretrained_model_name_or_path": "bert-base-uncased"
+    },
+    "verbosity": 10,
+    "eval_dataset": "data/viquae_dataset/validation",
+    "kb": "data/viquae_passages",
+    "metric": "ranker",
+    "M": 5,
+    "n_relevant_passages": 1,
+    "search_key": "search",
+    "tokenization_kwargs": {
+        "max_length": 256,
+        "padding": "max_length"
+    },
+    "checkpoint": {
+        "resume_from_checkpoint":   "experiments/reranking/bert/viquae/train/checkpoint-2400"
+    },
+    "callbacks_args": [
+        {
+            "Class": "EarlyStoppingCallback",
+            "early_stopping_patience": 10
+        }
+    ],
+    "training_kwargs": {
+        "do_train": false,
+        "do_eval": true,
+        "do_predict": false,
+        "group_by_length": false,
+        "output_dir": "experiments/rc/ranking/viquae/test",
+        "logging_dir": "experiments/rc/ranking/viquae/test",
+        "evaluation_strategy": "steps",
+        "per_device_train_batch_size": 3,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 1,
+        "eval_accumulation_steps": 1,
+        "max_grad_norm": 1.0,
+        "max_steps": 50000,
+        "learning_rate": 1e-05,
+        "weight_decay": 0.0,
+        "lr_scheduler_type": "constant",
+        "warmup_steps": 0,
+        "logging_steps": 1000,
+        "save_steps": 1000,
+        "eval_steps": 1000,
+        "dataloader_num_workers": 0,
+        "dataloader_pin_memory": true,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.999,
+        "ignore_data_skip": true,
+        "remove_unused_columns": false,
+        "prediction_loss_only": false,
+        "greater_is_better": true,
+        "load_best_model_at_end": true,
+        "metric_for_best_model": "eval_MRR@N*M",
+        "report_to": "tensorboard",
+        "label_names": ["switch_labels", "indices", "relevants"]
+    }
+}
