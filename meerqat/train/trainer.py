@@ -8,6 +8,7 @@ import collections
 import sys
 import logging
 import humanize
+from PIL import Image 
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from torch.autograd import set_detect_anomaly
 from torch.utils.data.dataset import IterableDataset
 import torch.distributed as dist
 
+from transformers import ViTFeatureExtractor, ViTModel, ViltFeatureExtractor
 from transformers import Trainer, TrainingArguments, trainer_callback, logging as t_logging
 from transformers.trainer_callback import TrainerState
 from datasets import load_from_disk, load_metric
@@ -50,6 +52,12 @@ def max_memory_usage(human=False):
             value = humanize.naturalsize(value, gnu=True)
         logs[f"max_memory_{device}"] = value
     return logs
+
+
+def json_load(path):
+    with open(path, 'r') as fid:
+        data_ = json.load(fid)
+    return data_
 
 
 class MeerqatTrainer(Trainer):
@@ -655,6 +663,7 @@ class BERTRankerTrainer(QuestionAnsweringTrainer):
     """
     def __init__(self, *args, oracle=False, **kwargs):
         super().__init__(*args, **kwargs)
+        self.cls = -1
         self.oracle = oracle
         if self.oracle:
             self.prediction_file_name = "oracle_predictions.json"
@@ -710,6 +719,7 @@ class BERTRankerTrainer(QuestionAnsweringTrainer):
         passage_scores = []
         indices, relevants = [], []
         N = len(items)
+        self.cls += 1
         for i, item in enumerate(items):
             # N. B. seed is set in Trainer
             questions.extend([item['input']]*self.M)
@@ -741,6 +751,7 @@ class BERTRankerTrainer(QuestionAnsweringTrainer):
         batch = self.tokenizer(*(questions, passages), **self.tokenization_kwargs)
         batch['N'] = N
         batch['M'] = self.M
+        batch['cls'] = self.cls
         batch['switch_labels'] = torch.tensor(switch_labels)
         
         if indices:
@@ -748,6 +759,234 @@ class BERTRankerTrainer(QuestionAnsweringTrainer):
             batch['relevants'] = torch.tensor(relevants)
         
         return batch
+        
+
+    def _prepare_inputs(self, inputs: dict) -> dict:
+        """remove all keys not used by the model but necessary for evaluation before returning Trainer._prepare_inputs"""
+        
+        return super()._prepare_inputs(inputs)
+    
+
+
+        
+class ViLTRankerTrainer(QuestionAnsweringTrainer):
+    """
+    Specific for RC, more precisely BERTRanker
+    
+    Parameters
+    ----------
+    *args, **kwargs: additional arguments are passed to QuestionAnsweringTrainer
+    """
+    def __init__(self, *args, feature_extractor=None,
+                 passage2image_file_name="", image_dir="", oracle=False, **kwargs):
+    
+        super().__init__(*args, **kwargs)
+        
+        self.oracle = oracle
+        if self.oracle:
+            self.prediction_file_name = "oracle_predictions.json"
+            self.metrics_file_name = "oracle_metrics.json"
+            if self.n_relevant_passages != self.M:
+                warnings.warn(f"Oracle mode. Setting n_relevant_passages={self.M}")
+                self.n_relevant_passages = self.M
+        assert self.n_relevant_passages == 1
+        
+        self.passage2image = json_load(passage2image_file_name)
+        self.image_dir = image_dir
+        self.feature_extractor = feature_extractor
+        
+        # FIXME isn't there a more robust way of defining data_collator as the method collate_fn ?
+        self.data_collator = self.collate_fn
+    
+    
+    def get_eval_passages(self, item):
+        #print("GET Evaluation Passages")
+        """Keep the top-M passages retrieved by the IR"""
+        indices = item[self.search_key+"_indices"][: self.M]
+        images  = [Path(self.image_dir) / self.passage2image[str(index)] for index in indices]
+        scores  = item[self.search_key+"_scores"][: self.M]
+        
+        relevants = item[self.search_key+"_provenance_indices"] + item[self.search_key+"_alternative_indices"]
+        original  = item[self.search_key+"_provenance_indices"]
+        
+        mask  = np.in1d(indices, original)
+        label = np.where(mask == True)[0][0] if len(np.where(mask == True)[0]) > 0 else -100
+        return self.kb.select(indices)['passage'], images, scores, indices, relevants, label
+
+    
+    def get_training_passages(self, item):
+        relevant_passages = []
+        relevant_images   = []
+        all_relevant_indices = item[self.search_key+"_provenance_indices"]
+        n_relevant = min(len(all_relevant_indices), self.n_relevant_passages)
+        if n_relevant > 0:
+            relevant_indices = np.random.choice(all_relevant_indices, n_relevant, replace=False)
+            if len(relevant_indices) > 0:
+                relevant_passages = self.kb.select(relevant_indices)['passage']
+                relevant_images   = [Path(self.image_dir) / self.passage2image[str(index)] for index in relevant_indices]
+        irrelevant_passages = []
+        all_irrelevant_indices = item[self.search_key+"_irrelevant_indices"]
+        n_irrelevant = min(len(all_irrelevant_indices), self.M-self.n_relevant_passages)
+        if n_irrelevant > 0:
+            irrelevant_indices = np.random.choice(all_irrelevant_indices, n_irrelevant, replace=False)
+            if len(irrelevant_indices) > 0:
+                irrelevant_passages = self.kb.select(irrelevant_indices)['passage']
+                irrelevant_images   = [Path(self.image_dir) / self.passage2image[str(index)] for index in irrelevant_indices]
+        elif n_relevant <= 0:
+            warnings.warn(f"Didn't find any passage for question {item['id']}")
+        return relevant_passages, irrelevant_passages, relevant_images, irrelevant_images
+    
+
+    def write_predictions(self, predictions, resume_from_checkpoint):
+        file_path = str(resume_from_checkpoint)
+        file_path = '/'.join(file_path.split('/')[:-1])
+        file_path  = Path(file_path)/"predictions.pt"
+        torch.save(predictions, file_path)
+    
+    
+    def write_metrics(self, metrics, resume_from_checkpoint):
+        print(metrics)
+        file_path = str(resume_from_checkpoint)
+        file_path = '/'.join(file_path.split('/')[:-1])
+        file_path  = Path(file_path)/self.metrics_file_name
+        with open(file_path, "w") as file:
+            json.dump(metrics, file)
+    
+    
+    def collate_fn(self, items):
+        """
+        Collate batch so that each question is associate with n_relevant_passages and M-n irrelevant ones.
+        Also tokenizes input strings
+
+        Returns (a dict of)
+        -------------------
+        input_ids: Tensor[int]
+            shape (N * M, L)
+        passage_scores: Tensor[float], optional
+            shape (N * M)
+            only in evaluation mode
+        **kwargs: more tensors depending on the tokenizer, e.g. attention_mask
+        """
+        questions, passages, switch_labels = [], [], []
+        question_imgs, passage_imgs = [], []
+        passage_scores = []
+        indices, relevants = [], []
+        N = len(items)
+        for i, item in enumerate(items):
+            # N. B. seed is set in Trainer
+            questions.extend([item['input']]*self.M)
+            question_imgs.extend([Path(self.image_dir) / item['image']]*self.M)            
+            
+            # oracle -> use only relevant passages
+            if (self.args.do_eval or self.args.do_predict) and not self.oracle:
+                passage, image, score, index, relevant, label = self.get_eval_passages(item)
+                #passage_imgs.extend(image)
+                passage_scores.extend(score)
+                indices.append(index)
+                relevants.append(relevant+[-1]*(1000-len(relevant)))
+                switch_labels.append(label)
+                
+                if len(score) < self.M:
+                    passage_scores.extend([0]*(self.M-len(score)))
+            else:
+                relevant_passage, irrelevant_passage, relevant_image, irrelevant_image = self.get_training_passages(item)
+                #if there is no relevant passage set label = -100, so it will be ignore when computing the loss
+                if len(relevant_passage) == 0:
+                    switch_labels.append(-100)
+                else: switch_labels.append(0)
+                passage = relevant_passage + irrelevant_passage
+                image   = relevant_image   + irrelevant_image
+
+            passages.extend(passage)
+            passage_imgs.extend(image)
+            
+            # padding passages
+            if len(passage) < self.M:
+                passages.extend(['']*(self.M-len(passage)))
+                passage_imgs.extend(['']*(self.M-len(passage)))
+            
+        batch = self.tokenizer(*(questions, passages), **self.tokenization_kwargs)
+        batch = self.get_visual_embeddings(batch, question_imgs, passage_imgs)
+        batch['N'] = N
+        batch['M'] = self.M
+        batch['switch_labels'] = torch.tensor(switch_labels)
+        if indices:
+            batch['indices']   = torch.tensor(indices)
+            batch['relevants'] = torch.tensor(relevants)
+        
+        return batch
+    
+    def _is_resizable(self, image, size=384, size_divisor=32):
+        shorter=size
+        longer = int((1333 / 800) * shorter)
+
+        w, h = image.size
+        min_size = shorter
+        max_size = longer
+        scale = min_size / min(w, h)
+
+        if h < w:
+            newh, neww = min_size, scale * w
+        else:
+            newh, neww = scale * h, min_size
+
+        if max(newh, neww) > max_size:
+            scale = max_size / max(newh, neww)
+            newh = newh * scale
+            neww = neww * scale
+
+        newh, neww = int(newh + 0.5), int(neww + 0.5)
+        newh, neww = newh // size_divisor * size_divisor, neww // size_divisor * size_divisor
+
+        return not(newh==0 or neww==0)
+
+    def _get_image_pixels(self, img_path):
+        
+        img_path = str(img_path)
+        size = (self.model.config.image_size, int(1333 / 800 * self.model.config.image_size + 0.5))
+        
+        if img_path == '':
+            img = Image.new('RGB', size)
+        else:
+            #print("img_path: ", img_path)
+            img = Image.open(img_path).convert('RGB')
+            
+            if not(self._is_resizable(img, size=self.model.config.image_size)):
+                img = img.resize(size, resample=Image.NEAREST)
+            
+        return img
+        
+            
+    def get_visual_embeddings(self, inputs, questions, passages):
+        
+        images = [] 
+        
+        ## all images
+        names = questions + passages
+        for name in names:
+            images.append(self._get_image_pixels(name))
+        
+        sizes = [img.size for img in images]
+        #print("sizes:", sizes)
+
+        #for l in range(len(sizes)):
+        #    if sizes[l][0] == 0 or sizes[l][1] == 0:
+        #        print("image index", l)
+        #        print("image name", images[i])
+        
+        encodings = self.feature_extractor(images, **self.tokenization_kwargs)
+        
+        pixel_values = torch.stack([encodings.pixel_values[:len(questions)], encodings.pixel_values[len(questions):]], dim=1)
+        pixel_mask   = torch.stack([encodings.pixel_mask[:len(questions)],   encodings.pixel_mask[len(questions):]], dim=1)
+        
+        inputs.update(
+            {
+                "pixel_values": pixel_values,
+                "pixel_mask": pixel_mask,
+            }
+        )
+        
+        return inputs
         
 
     def _prepare_inputs(self, inputs: dict) -> dict:
@@ -775,9 +1014,9 @@ def instantiate_trainer(trainee, trainer_class="MultiPassageBERTTrainer", debug=
 
     # data
     if train_dataset is not None:
-        train_dataset = load_from_disk(train_dataset)
+        train_dataset = load_from_disk(train_dataset)#.shard(num_shards=100, index=0)
     if eval_dataset is not None:
-        eval_dataset = load_from_disk(eval_dataset)
+        eval_dataset = load_from_disk(eval_dataset)#.shard(num_shards=100, index=0)
 
     # training
     # revert the post-init that overrides do_eval
