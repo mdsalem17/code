@@ -1,3 +1,7 @@
+# Reranking Methods
+In this repository contains information on how to download the dataset, the knowledge base, and how to replicate the results. 
+To use [Reranking Transformers](https://github.com/mdsalem17/RerankingTransformer) on ViQuAE.
+
 # ViQuAE
 Source code and data used in the paper [*ViQuAE, a Dataset for Knowledge-based Visual Question Answering about Named Entities*](https://hal.archives-ouvertes.fr/hal-03650618), Lerner et al., SIGIR'22. 
 
