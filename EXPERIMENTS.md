@@ -364,10 +364,42 @@ If you’re interested in comparing only image representations, leaving downstre
 - `filter` the dataset so that you don’t evaluate on irrelevant questions (e.g. those were the search is done with ArcFace because a face was detected)
 - evaluate at the *document-level* instead of passage-level. To do so, maybe `checkout` the `document` branch (TODO merge in `main`).
 
+## Reranking
+After retrieving candidate passage, we use two unimodal models to rerankers them namely: BERTRanker (for text reranking) and RRT (for image reranking). In addition, we use a bimodal model: ViLTRanker.
+
+To use [Reranking Transformers](https://github.com/mdsalem17/RerankingTransformer) on ViQuAE.
+
+We  mplemented BERT Ranker model from Delvin et al. (2019), which fed the embedding of the CLS token to a classifier that outputs a similarity between the question-passage pair.
+
+We also implemented the ViLT Ranker model from Kim et al. (2021), which take the concatenation of the text of a question-passage pair and fed the two images separately to obtain embeddings.
+
+### Pre-training on TriviaQA for BERT Ranker
+If you want to skip this step you can get our pretrained model at https://huggingface.co/PaulLerner/multi_passage_bert_triviaqa_without_viquae
+
+Our training set consists of questions that were not used to generate any ViQuAE questions, 
+even those that were discarded or remain to be annotated.
+Our validation set consists of the questions that were used to generate ViQuAE validation set.
+Get TriviaQA with these splits from: https://huggingface.co/datasets/PaulLerner/triviaqa_for_viquae (or `load_dataset("triviaqa_for_viquae")`)
+
+We used the same hyperparameters as Karpukhin et al. except for the ratio of relevant passages:
+We use 8 relevant and 16 irrelevant passages (so 24 in total) per question 
+(the intuition was to get a realistic precision@24 score w.r.t. the search results, 
+we haven’t tried any other setting).
+The model is trained to predict the first token (`[CLS]`) as answer for irrelevant passages.
+
+- `max_n_answers`: the model is trained to predict all off the positions of the answer in the passage up to this threshold 
+- `train_original_answer_only`: use in conjunction with the above preprocessing, defaults to True
+
+As with DPR, IR is then carried out with BM25 on the full 5.9M articles of KILT's Wikipedia instead of our multimodal KB.
+
+```sh
+python -m meerqat.train.trainer experiments/rc/triviaqa/train/config.json
+```
+
 
 ## Reading Comprehension
 
-Now we have retrieved candidate passages, it’s time to train a Reading Comprehension system (reader).
+Now we have reranked candidate passages, it’s time to train a Reading Comprehension system (reader).
 We first pre-train the reader on TriviaQA before fine-tuning it on ViQuAE.
 Our model is based on Multi-Passage BERT (Wang et al., 2019), it simply extends the BERT fine-tuning for QA (Devlin et al., 2019)
 with the global normalization by Clark et. al (2018), 
