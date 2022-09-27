@@ -1,3 +1,32 @@
+#Experiments files
+experiments/rc/triviaqa/test/*
+experiments/rc/triviaqa/train/checkpoint-46000
+experiments/rc/viquae/test0/
+experiments/rc/viquae/test1/
+experiments/rc/viquae/test2/
+experiments/rc/viquae/test3/
+experiments/rc/viquae/train/checkpoint-3200/
+experiments/rc/viquae/train/logs/
+experiments/rc/viquae/train0/
+experiments/rc/viquae/train1/
+experiments/rc/viquae/train2/
+experiments/rc/viquae/train3/
+experiments/reranking/bert/triviaqa/test/logs/
+experiments/reranking/bert/triviaqa/test/metrics.json
+experiments/reranking/bert/triviaqa/test/metrics_24.json
+experiments/reranking/bert/triviaqa/train/checkpoint-43000/
+experiments/reranking/bert/triviaqa/train/logs/
+experiments/reranking/bert/triviaqa/train/metrics.json
+experiments/reranking/bert/viquae/test/logs
+experiments/reranking/bert/viquae/train/logs
+experiments/reranking/bert/viquae/train/checkpoint-2400/
+experiments/reranking/vilt/test/dev_metrics.json
+experiments/reranking/vilt/test/logs/
+experiments/reranking/vilt/test/test_metrics.json
+experiments/reranking/vilt/train/checkpoint-8400/
+experiments/reranking/vilt/train/logs/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
