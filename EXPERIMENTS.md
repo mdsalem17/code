@@ -374,28 +374,32 @@ We  mplemented BERT Ranker model from Delvin et al. (2019), which fed the embedd
 We also implemented the ViLT Ranker model from Kim et al. (2021), which take the concatenation of the text of a question-passage pair and fed the two images separately to obtain embeddings.
 
 ### Pre-training on TriviaQA for BERT Ranker
-If you want to skip this step you can get our pretrained model at https://huggingface.co/PaulLerner/multi_passage_bert_triviaqa_without_viquae
+If you want to skip this step you can get our pretrained model at (TODO add link for pretrained BERT Ranker)
 
 Our training set consists of questions that were not used to generate any ViQuAE questions, 
 even those that were discarded or remain to be annotated.
 Our validation set consists of the questions that were used to generate ViQuAE validation set.
-Get TriviaQA with these splits from: https://huggingface.co/datasets/PaulLerner/triviaqa_for_viquae (or `load_dataset("triviaqa_for_viquae")`)
+Again get TriviaQA with these splits from: https://huggingface.co/datasets/PaulLerner/triviaqa_for_viquae (or `load_dataset("triviaqa_for_viquae")`)
 
-We used the same hyperparameters as Karpukhin et al. except for the ratio of relevant passages:
-We use 8 relevant and 16 irrelevant passages (so 24 in total) per question 
-(the intuition was to get a realistic precision@24 score w.r.t. the search results, 
-we haven’t tried any other setting).
-The model is trained to predict the first token (`[CLS]`) as answer for irrelevant passages.
+We used similar hyperparameters as Karpukhin et al. with 1 relevant and 23 irrelevant passages (so 24 in total) per question.
+The model is trained to predict a similarity score bases of the vector representation of the first token (`[CLS]`).
 
-- `max_n_answers`: the model is trained to predict all off the positions of the answer in the passage up to this threshold 
 - `train_original_answer_only`: use in conjunction with the above preprocessing, defaults to True
 
 As with DPR, IR is then carried out with BM25 on the full 5.9M articles of KILT's Wikipedia instead of our multimodal KB.
 
 ```sh
-python -m meerqat.train.trainer experiments/rc/triviaqa/train/config.json
+python -m meerqat.train.trainer experiments/reranking/triviaqa/train/config.json
 ```
 
+### Fine-tuning on ViQuAE
+
+Here you simply set `experiments/rc/triviaqa/train/checkpoint-46000` as pre-trained model instead of `bert-base-uncased` (TODO add model link to use ours).
+
+Then you can fine-tune the model:
+```sh
+python -m meerqat.train.trainer experiments/reranking/viquae/train/config.json
+```
 
 ## Reading Comprehension
 

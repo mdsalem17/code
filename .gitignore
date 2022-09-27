@@ -25,7 +25,7 @@ experiments/reranking/vilt/test/logs/
 experiments/reranking/vilt/test/test_metrics.json
 experiments/reranking/vilt/train/checkpoint-8400/
 experiments/reranking/vilt/train/logs/
-
+results/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
