@@ -29,7 +29,7 @@
         "padding": "max_length"
     },
     "checkpoint": {
-        "resume_from_checkpoint": "experiments/reranking/vilt/train4/checkpoint-8400"
+        "resume_from_checkpoint": "experiments/reranking/vilt/train/checkpoint-8400"
     },
     "callbacks_args": [
         {
