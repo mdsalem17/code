@@ -369,7 +369,7 @@ After retrieving candidate passage, we use two unimodal models to rerankers them
 
 To use [Reranking Transformers](https://github.com/mdsalem17/RerankingTransformer) on ViQuAE.
 
-We  mplemented BERT Ranker model from Delvin et al. (2019), which fed the embedding of the CLS token to a classifier that outputs a similarity between the question-passage pair.
+We implemented BERT Ranker model from Delvin et al. (2019), which fed the embedding of the CLS token to a classifier that outputs a similarity between the question-passage pair.
 
 We also implemented the ViLT Ranker model from Kim et al. (2021), which take the concatenation of the text of a question-passage pair and fed the two images separately to obtain embeddings.
 
@@ -384,12 +384,10 @@ Again get TriviaQA with these splits from: https://huggingface.co/datasets/PaulL
 We used similar hyperparameters as Karpukhin et al. with 1 relevant and 23 irrelevant passages (so 24 in total) per question.
 The model is trained to predict a similarity score bases of the vector representation of the first token (`[CLS]`).
 
-- `train_original_answer_only`: use in conjunction with the above preprocessing, defaults to True
-
 As with DPR, IR is then carried out with BM25 on the full 5.9M articles of KILT's Wikipedia instead of our multimodal KB.
 
 ```sh
-python -m meerqat.train.trainer experiments/reranking/triviaqa/train/config.json
+python -m meerqat.train.trainer experiments/reranking/bert/triviaqa/train/config.json
 ```
 
 ### Fine-tuning on ViQuAE
@@ -398,7 +396,7 @@ Here you simply set `experiments/rc/triviaqa/train/checkpoint-46000` as pre-trai
 
 Then you can fine-tune the model:
 ```sh
-python -m meerqat.train.trainer experiments/reranking/viquae/train/config.json
+python -m meerqat.train.trainer experiments/reranking/bert/viquae/train/config.json
 ```
 
 ## Reading Comprehension
