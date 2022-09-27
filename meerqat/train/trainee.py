@@ -333,7 +333,7 @@ class BERTRanker(BertForQuestionAnswering):
     def forward(self,
                 input_ids,
                 switch_labels=None,
-                N=None, M=None, cls=-1,
+                N=None, M=None,
                 indices=None, relevants=None,
                 return_dict=None, **kwargs):
         """
@@ -354,8 +354,6 @@ class BERTRanker(BertForQuestionAnswering):
         outputs = self.bert(input_ids, return_dict=True, **kwargs)
         sequence_output = outputs[0]
         relevance_logits = self.qa_classifier(sequence_output[:, 0, :])
-        
-        torch.save(sequence_output[:, 0, :], 'test_'+str(cls)+'.pt')
         
         switch_loss = None
         if len(switch_labels) > 0:
